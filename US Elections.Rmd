@@ -1,0 +1,167 @@
+---
+title: "US Elections"
+author: "Guillem Vidal"
+date: "11/2020"
+output: html_document
+---
+
+# Preliminares
+
+```{r}
+# Limpiar lista
+rm(list=ls())
+```
+
+```{r setup, include=FALSE, echo=FALSE}
+require(knitr)
+opts_knit$set(root.dir = "/Users/guillem/Desktop/INE")
+```
+
+Instalar y cargar los paquetes necesarios:
+```{r}
+# Paquetes
+packages <- c("tidyverse", "jsonlite", "dplyr", "plyr")
+
+# Instalar paquetes no instalados
+installed_packages <- packages %in% rownames(installed.packages())
+if (any(installed_packages == FALSE)) {
+  install.packages(packages[!installed_packages])
+}
+
+# Cargar paquetes
+lapply(packages, library, character.only = TRUE)
+```
+
+
+# Datos
+
+## Datos NYTimes
+
+```{r}
+# Datos del NYTimes
+json_url <- "https://static01.nyt.com/elections-assets/2020/data/api/2020-11-03/national-map-page/national/president.json"
+nytimes <- fromJSON(json_url)
+
+# Seleccionar data de condados
+counties <- nytimes$data$races$counties
+
+## Quitar (for now) resultados y "results_absentee" para poder combinar
+rmcou <- Map(function(x){x[,names(x) != "results"]}, counties)
+cou_merge <- Map(function(x){x[,names(x) != "results_absentee"]}, rmcou)
+
+## Juntar los Condados (Counties)
+all_counties <- bind_rows(cou_merge, .id = "column_label")
+
+```
+
+## Datos COVID
+
+```{r}
+# COVID data Johns Hopkins 
+url_covid <- "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_daily_reports/11-03-2020.csv"
+deaths_covid <- read.csv(url_covid, header = TRUE, sep = ",")
+deaths_covid2<-deaths_covid[(deaths_covid$Country_Region =="US"),]
+names(deaths_covid2)[names(deaths_covid2)=="FIPS"] <- "fips"
+deaths_covid2$fips <- sprintf("%05d", deaths_covid2$fips)
+
+# For population
+url_pop <- "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/time_series_covid19_deaths_US.csv"
+pop <- read.csv(url_pop, header = TRUE, sep = ",")
+pop <- pop[,c("FIPS", "Population")]
+names(pop)[names(pop)=="FIPS"] <- "fips"
+pop$fips <- sprintf("%05d", pop$fips)
+
+```
+
+## Datos Ingresos
+```{r}
+# Datos de ingresos
+inc <- "https://github.com/rwright88/counties/raw/master/data/income.rda"
+download.file(inc,"myfile")
+load("myfile")
+names(income)[names(income)=="county_fips"] <- "fips"
+```
+
+
+## Otros Datos a explorar (y combinar, por ahora no combinados)
+```{r}
+# Prev. vote data
+vote <- "https://github.com/Deleetdk/USA.county.data/raw/master/data/USA_county_data.RData"
+download.file(vote,"myfile")
+load("myfile")
+USA_county_data$fips <- sprintf("%05d", USA_county_data$fips)
+
+# Unemployment
+url_unemp <- "https://www.ers.usda.gov/webdocs/DataFiles/48747/Unemployment.csv?v=286.3"
+unemp <- read.csv(url_unemp, header = TRUE, sep = ",")
+names(unemp)[names(unemp)=="FIPStxt"] <- "fips"
+
+# Poverty
+url_pov <- "https://www.ers.usda.gov/webdocs/DataFiles/48747/PovertyEstimates.csv?v=286.3"
+pov <- read.csv(url_pov, header = TRUE, sep = ",")
+names(pov)[names(pov)=="FIPStxt"] <- "fips"
+pov$fips <- sprintf("%05d", pov$fips)
+
+# Life expectancy (BY YEAR)
+life <- "https://github.com/rwright88/counties/raw/master/data/life.rda"
+download.file(life,"myfile")
+load("myfile")
+names(income)[names(income)=="county_fips"] <- "fips"
+```
+
+## Combinar datos 2020 con ingresos y covid
+```{r}
+
+merged <- merge(all_counties, deaths_covid2, by.x = "fips", ALL = TRUE)
+merged <-merge(merged, income, by.x = "fips", ALL = TRUE)
+merged <-merge(merged, pop, by.x = "fips", ALL = TRUE)
+
+```
+
+# Variables
+```{r}
+# Quitar missings de los márgenes
+merged <- merged[!is.na(merged$margin2020),]
+
+# Margen demócratas (más positivo más margen de Biden con respecto a 2016)
+margin_dem20 <- ifelse(merged$leader_party_id == "democrat", merged$margin2020, NA)
+margin_dem16 <- ifelse(merged$leader_party_id == "democrat", merged$margin2016, NA)
+merged$margin_dem <- margin_dem20-margin_dem16
+
+# Deaths by 1000x
+merged$deaths10x <- merged$Deaths / merged$Population *100000
+
+```
+
+
+# Ejemplo gráficos
+
+## Márgen demócrata vs. ingresos por county:
+
+```{r}
+# Márgen demócrata vs. ingresos por county:
+require(ggplot2)
+ggplot(merged, aes(x=income_hh, y=margin_dem)) +
+  geom_point(alpha=0.35, size=1, shape=16) +
+  geom_smooth(method="auto", size = 1,  color="blue") +
+  geom_rug() +
+  geom_hline(yintercept = 0, colour = "grey") +
+  xlab("Household Income") +
+  ylab("Margin 2020 - 2016") 
+```
+
+## Márgen demócrata vs. muertes por 1000 mil hab.
+
+```{r}
+# Márgen demócrata vs. muertes COVID-19:
+ggplot(merged, aes(x=deaths10x, y=margin_dem)) +
+  geom_point(alpha=0.35, size=1, shape=16) +
+  geom_smooth(method="auto", size = 1,  color="blue") +
+  geom_rug() +
+  geom_hline(yintercept = 0, colour = "grey") +
+  xlab("Muertes Covid-19 per 100 th.") +
+  ylab("Margin 2020 - 2016") 
+```
+
+
+
